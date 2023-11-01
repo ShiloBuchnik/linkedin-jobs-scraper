@@ -1,15 +1,15 @@
 from bs4 import BeautifulSoup  # For searching in HTML file
 from colorama import Fore  # For coloring output text
-import csv
+import csv # For handling csv files
+import time
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException
-import time
+from selenium.common.exceptions import JavascriptException
 
 # Returns colored version of the given string
 def getColoredString(string, color):
@@ -50,12 +50,12 @@ class Job:
 
 # How we handle infinite scrolling
 def scrollUntilBottom(driver):
-	last_total_height = driver.execute_script("return document.body.scrollHeight")  # Returns total height of 'body' element
+	last_total_height = driver.execute_script("return document.body.scrollHeight")  # Returns total height of 'body' element's content
 	while True:
 		driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")  # Running JS to scroll to bottom
 		time.sleep(1)  # Let the page load properly. Using 'sleep' instead of 'wait' is acceptable here
-		curr_total_height = driver.execute_script("return document.body.scrollTop")
-		if last_total_height == curr_total_height: # When our scrolling hasn't changed the height, we know we've reached the bottom
+		curr_total_height = driver.execute_script("return document.body.scrollHeight")
+		if last_total_height == curr_total_height: # When our scrolling hasn't changed the content's height, we know we've reached the bottom
 			break
 
 		last_total_height = curr_total_height
@@ -63,13 +63,27 @@ def scrollUntilBottom(driver):
 # Gets HTML from URL, and gets all 'div' elements that represents jobs in the webpage.
 def getRawJobs(driver, urls_list):
 	divs_elements = set() # {} means an empty dict, so we use 'set()' instead
+	wait = WebDriverWait(driver, 0.5)
 
-	for url in urls_list:
-		driver.get(url)
-		scrollUntilBottom(driver)
+	# There's a lot of happening here because of LinkedIn shitty anti-scraping policy.
+	# First, sometimes it'll show only part of the actual job results on a page visit, so we visit every page *twice*.
+	# Second, sometimes it'll redirect us to a login page instead of the webpage.
+	# For that we put 'try except' block in an infinite loop, basically requesting the page until we get what we want.
+	# We check if we got to the real page with waiting for a 'div.base-card' element to be visible.
+	# If it's not the real page, it throws 'TimeoutException' or 'JavascriptException'
+	for i in range(2):
+		for url in urls_list:
+			while True:
+				try:
+					driver.get(url)
+					scrollUntilBottom(driver)
+					wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.base-card")))
+					break
+				except (TimeoutException, JavascriptException):
+					pass
 
-		soup = BeautifulSoup(driver.page_source, 'html.parser')
-		divs_elements.update(soup.find_all("div", class_="base-card")) # That element has several classes. We only write one of them
+			soup = BeautifulSoup(driver.page_source, 'html.parser')
+			divs_elements.update(soup.find_all("div", class_="base-card")) # That element has several classes. We only write one of them
 
 	# Returning a set of <div>s that represent jobs.
 	return divs_elements
@@ -98,7 +112,7 @@ def rawJobsToFormattedJobs(divs_elements, keywords_list):
 		if not stringContains(content, keywords_list):
 			continue
 
-		location = div.find("span", class_="job-search-card__location").text
+		location = div.find("span", class_="job-search-card__location").text # Finds *element* inside <div> element
 		location = location.strip()
 		index = location.find(',')
 		if index != -1: # Extract only the city's name. Sometimes it just says 'Israel', so there won't be a comma
@@ -107,10 +121,10 @@ def rawJobsToFormattedJobs(divs_elements, keywords_list):
 		company_name = second_a_element.text
 		company_name = company_name.strip()
 
-		upload_time = div.find("time").text # Find *element* inside <div> element
+		upload_time = div.find("time").text
 		upload_time = upload_time.strip()
 
-		href = first_a_element.get("href") # Find *field* of <a> element
+		href = first_a_element.get("href") # Finds *field* of <a> element
 		index = href.find('?')
 		if index != -1: # Removes the query string from the URL, if present
 			href = href[:index]
@@ -159,27 +173,36 @@ def printSets(all_curr_jobs, old_jobs):
 		for job in sorted(unchanged_jobs, key=sortKey):
 			job.print()
 
+# TODO: handle when job title is not valid
 def main():
-	jobs_urls = ["https://www.linkedin.com/jobs/search?keywords=student%20software&location=Israel",
-				"https://www.linkedin.com/jobs/search?keywords=Student%20Software%20Engineer&location=Israel"]
+	job_titles = ["Student Software", "Student Software Engineer"]
+	country = "Israel" # Caps doesn't matter for this variable
 	keywords_list = ["student", "intern", "סטודנט"]
 
+	job_urls = []
+	# Convert title like "Student Software Engineer" to a valid URL like
+	# "https://www.linkedin.com/jobs/search?keywords=Student%20Software%20Engineer&location=Israel"
+	for title in job_titles:
+		curr_str = "https://www.linkedin.com/jobs/search?keywords="
+		words = [word + "%20" for word in title.split()]
+		words[-1] = words[-1][:-3] # Removing the '%20' from last word
+
+		curr_str += ''.join(words)
+		curr_str += "&location=" + country
+		job_urls.append(curr_str)
+
 	options = Options()
-	options.add_argument('--blink-settings=imagesEnabled=false')
-	#options.add_argument("--headless=new")
+	options.add_argument("--headless=new")
+	driver = webdriver.Chrome(options)
 
-	divs_elements = set()
-
-	for i in range(2):
-		driver = webdriver.Chrome(options)
-		divs_elements.update(getRawJobs(driver, jobs_urls))
-		driver.close()
+	divs_elements = getRawJobs(driver, job_urls)
+	driver.close()
 
 	all_curr_jobs = rawJobsToFormattedJobs(divs_elements, keywords_list)
 
 	try:
 		with open("jobs.csv", 'r') as file:
-			reader = csv.reader(file) # Get 'reader' object
+			reader = csv.reader(file)
 			old_jobs = {Job(row[0], row[1], row[2], row[3], row[4]) for row in reader}
 	except FileNotFoundError:
 		old_jobs = set()
@@ -187,7 +210,7 @@ def main():
 	printSets(all_curr_jobs, old_jobs)
 
 	with open("jobs.csv", 'w', newline='') as file: # 'csv' already adds newlines in the file, so we set 'newline' to nothing
-		writer = csv.writer(file) # Get 'writer' object
+		writer = csv.writer(file)
 		writer.writerows([tuple(job) for job in all_curr_jobs])
 
 
