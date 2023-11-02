@@ -9,7 +9,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException
-from selenium.common.exceptions import JavascriptException
 
 # Returns colored version of the given string
 def getColoredString(string, color):
@@ -60,27 +59,39 @@ def scrollUntilBottom(driver):
 
 		last_total_height = curr_total_height
 
+# There's a lot of happening here, because of LinkedIn shitty anti-scraping policy.
+# First, sometimes it'll show only part of the actual job results on a page visit, so we visit every page *twice*.
+# Second, sometimes it'll redirect us to a login page instead of the webpage.
+# For that we put 'try except' block in an infinite loop, basically requesting the page until we get what we want.
+# We check if we got to the real page by waiting for a 'div.base-card' element to be visible.
+# If it's not the real page, the element won't appear, and it throws 'TimeoutException'.
+
+# Also, we alert the user when a job title is not valid, by waiting for an element that shows up only in the "invalid job title" page
+def getPageAndScroll(driver, wait, url):
+	while True:
+		try:
+			driver.get(url)
+			try:
+				wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "h1.core-section-container__main-title")))
+				print(Fore.RED + "Program ran into an invalid job title that generated following URL: " + Fore.RESET + url)
+				exit(-1)
+			except TimeoutException:
+				pass
+
+			wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.base-card")))
+			scrollUntilBottom(driver)
+			break
+		except TimeoutException:
+			pass
+
 # Gets HTML from URL, and gets all 'div' elements that represents jobs in the webpage.
 def getRawJobs(driver, urls_list):
 	divs_elements = set() # {} means an empty dict, so we use 'set()' instead
 	wait = WebDriverWait(driver, 0.5)
 
-	# There's a lot of happening here because of LinkedIn shitty anti-scraping policy.
-	# First, sometimes it'll show only part of the actual job results on a page visit, so we visit every page *twice*.
-	# Second, sometimes it'll redirect us to a login page instead of the webpage.
-	# For that we put 'try except' block in an infinite loop, basically requesting the page until we get what we want.
-	# We check if we got to the real page with waiting for a 'div.base-card' element to be visible.
-	# If it's not the real page, it throws 'TimeoutException' or 'JavascriptException'
 	for i in range(2):
 		for url in urls_list:
-			while True:
-				try:
-					driver.get(url)
-					scrollUntilBottom(driver)
-					wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "div.base-card")))
-					break
-				except (TimeoutException, JavascriptException):
-					pass
+			getPageAndScroll(driver, wait, url)
 
 			soup = BeautifulSoup(driver.page_source, 'html.parser')
 			divs_elements.update(soup.find_all("div", class_="base-card")) # That element has several classes. We only write one of them
@@ -173,12 +184,12 @@ def printSets(all_curr_jobs, old_jobs):
 		for job in sorted(unchanged_jobs, key=sortKey):
 			job.print()
 
-# TODO: handle when job title is not valid
 def main():
 	job_titles = ["Student Software", "Student Software Engineer"]
-	country = "Israel" # Caps doesn't matter for this variable
+	country = "Israel"
 	keywords_list = ["student", "intern", "סטודנט"]
 
+	print("Running, please wait...")
 	job_urls = []
 	# Convert title like "Student Software Engineer" to a valid URL like
 	# "https://www.linkedin.com/jobs/search?keywords=Student%20Software%20Engineer&location=Israel"
@@ -192,12 +203,11 @@ def main():
 		job_urls.append(curr_str)
 
 	options = Options()
-	options.add_argument("--headless=new")
+	options.add_argument("--headless=new") # If you want to see the driver in action (for debugging purposes), comment this line
 	driver = webdriver.Chrome(options)
 
 	divs_elements = getRawJobs(driver, job_urls)
 	driver.close()
-
 	all_curr_jobs = rawJobsToFormattedJobs(divs_elements, keywords_list)
 
 	try:
