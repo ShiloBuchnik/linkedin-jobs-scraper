@@ -115,7 +115,12 @@ def rawJobsToFormattedJobs(divs_elements, keywords_list):
 	formatted_jobs = set()
 
 	for div in divs_elements:
-		first_a_element, second_a_element = div.find_all("a")
+		try: # Temporary, until I debug this pesky 'valueError' exception
+			first_a_element, second_a_element = div.find_all("a")
+		except ValueError:
+			with open("test.html", "w") as file:
+				file.write(div)
+			exit(-1)
 
 		content = first_a_element.text # Gets content of element
 		content = content.strip()
@@ -184,30 +189,38 @@ def printSets(all_curr_jobs, old_jobs):
 		for job in sorted(unchanged_jobs, key=sortKey):
 			job.print()
 
-def main():
-	job_titles = ["Student Software", "Student Software Engineer"]
-	country = "Israel"
-	keywords_list = ["student", "intern", "סטודנט"]
-
-	print("Running, please wait...")
+def jobTitlesToJobUrls(job_titles, country):
 	job_urls = []
 	# Convert title like "Student Software Engineer" to a valid URL like
 	# "https://www.linkedin.com/jobs/search?keywords=Student%20Software%20Engineer&location=Israel"
 	for title in job_titles:
 		curr_str = "https://www.linkedin.com/jobs/search?keywords="
 		words = [word + "%20" for word in title.split()]
-		words[-1] = words[-1][:-3] # Removing the '%20' from last word
+		words[-1] = words[-1][:-3]  # Removing the '%20' from last word
 
 		curr_str += ''.join(words)
 		curr_str += "&location=" + country
 		job_urls.append(curr_str)
 
+	return job_urls
+
+def main():
+	job_titles = ["Student Software", "Student Software Engineer"]
+	country = "Israel"
+	keywords_list = ["student", "intern", "סטודנט"]
+
+	print("Running, please wait...")
+	job_urls = jobTitlesToJobUrls(job_titles, country)
+
 	options = Options()
 	options.add_argument("--headless=new") # If you want to see the driver in action (for debugging purposes), comment this line
+	options.add_argument("--disable-gpu") # Helps a bit with performance
 	driver = webdriver.Chrome(options)
 
+	start = time.time()
 	divs_elements = getRawJobs(driver, job_urls)
 	driver.close()
+	print(time.time() - start)
 	all_curr_jobs = rawJobsToFormattedJobs(divs_elements, keywords_list)
 
 	try:
@@ -222,6 +235,8 @@ def main():
 	with open("jobs.csv", 'w', newline='') as file: # 'csv' already adds newlines in the file, so we set 'newline' to nothing
 		writer = csv.writer(file)
 		writer.writerows([tuple(job) for job in all_curr_jobs])
+
+	input("Press any key...")
 
 
 if __name__ == '__main__':
