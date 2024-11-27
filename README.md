@@ -9,7 +9,9 @@ Therefore, this repo hosts the theoretical script that would be written in the a
 The (theoretical) script creates a save file `jobs.csv` to keep track of jobs seen in previous run,  
 so that in the next run of the script, new jobs will appear first.
 
-In main, you can change `job_titles`, `country` and `keywords` to the values you wish (case-insensitive).  
-The script would only display job listings whose titles contain one of the keywords.  
+In main, you can change `job_titles`, `country`, `keywords`, `forbidden_words` and `cutoff_time_in_months`  
+to the values you wish (case-insensitive).  
+The script would only display job listings whose titles contain one of the `keywords`,  
+and DOESN'T contain one of the `forbidden words`.  
   
 *Note that it only displays results from the public 'jobs' page, and not the unique one that requires login.

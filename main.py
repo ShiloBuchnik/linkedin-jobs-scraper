@@ -2,6 +2,7 @@ from bs4 import BeautifulSoup  # For searching in HTML file
 from colorama import Fore  # For coloring output text
 import csv # For handling csv files
 import time
+from datetime import timedelta
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -11,34 +12,35 @@ from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException
 
 # Returns colored version of the given string
-def getColoredString(string, color):
+def getColoredString(string: str, color) -> str:
 	return color + string + Fore.RESET
 
 class Job:
-	def __init__(self, content, location, upload_time, company_name, href):
+	def __init__(self, content: str, location: str, upload_time: str, company_name: str, href: str, timedelta_obj: timedelta):
 		self.content = content
 		self.location = location
 		self.upload_time = upload_time
+		self.timedelta_obj = timedelta_obj
 		self.company_name = company_name
 		self.href = href
 
 	def print(self):
 		print(getColoredString("Job's title: ", Fore.RED) + self.content + getColoredString(" Location: ", Fore.RED) +
 		self.location + getColoredString(" Upload time: ", Fore.RED) + self.upload_time +
-		getColoredString(" Company name: ", Fore.RED) + self.company_name + getColoredString(" Link: ", Fore.RED) + self.href)
+		getColoredString(" Company name: ", Fore.RED) + self.company_name + getColoredString(" Link:\n", Fore.RED) + self.href + "\n")
 
 	# In order to store Job objects in a set, we need to define two methods:
 	# 1) __hash__: simply because all elements in a set must be hashable, since it is simply a hash-table
 	# 2) __eq__: When we insert an element into a set, we need to know if it's already equal to an existing element.
 	# The default implementation is to return true iff the objects are literally the same in memory.
-	# We want to extend that - two objects are the same iff their href is the same
+	# We want to change that - two objects are the same iff their href is the same
 	def __eq__(self, obj):
 		return True if self.href == obj.href else False
 
 	def __hash__(self):
 		return hash((self.content, self.location, self.upload_time, self.company_name, self.href))
 
-	# We want the tuple() built-in to work on Job objects (convert them to tuples).
+	# We want the tuple() built-in function to work on Job objects (convert them to tuples).
 	# For that we need to make our object an iterable, and we do that by defining '__iter__'. We define it as a generator function.
 	def __iter__(self):
 		yield self.content
@@ -48,7 +50,7 @@ class Job:
 		yield self.href
 
 # How we handle infinite scrolling
-def scrollUntilBottom(driver):
+def scrollUntilBottom(driver) -> None:
 	last_total_height = driver.execute_script("return document.body.scrollHeight")  # Returns total height of 'body' element's content
 	while True:
 		driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")  # Running JS to scroll to bottom
@@ -67,7 +69,7 @@ def scrollUntilBottom(driver):
 # If it's not the real page, the element won't appear, and it throws 'TimeoutException'.
 
 # Also, we alert the user when a job title is not valid, by waiting for an element that shows up only in the "invalid job title" page
-def getPageAndScroll(driver, wait, url):
+def getPageAndScroll(driver, wait, url: str) -> None:
 	while True:
 		try:
 			driver.get(url)
@@ -85,7 +87,7 @@ def getPageAndScroll(driver, wait, url):
 			pass
 
 # Gets HTML from URL, and gets all 'div' elements that represents jobs in the webpage.
-def getRawJobs(driver, urls_list):
+def getRawJobs(driver, urls_list: list[str]) -> set:
 	divs_elements = set() # {} means an empty dict, so we use 'set()' instead
 	wait = WebDriverWait(driver, 0.5)
 
@@ -95,37 +97,42 @@ def getRawJobs(driver, urls_list):
 
 			soup = BeautifulSoup(driver.page_source, 'html.parser')
 			divs_elements.update(soup.find_all("div", class_="base-card")) # That element has several classes. We only write one of them
-
 	# Returning a set of <div>s that represent jobs.
 	return divs_elements
 
-# Returns true iff 'string' contains one of the words in 'words_list', while IGNORING CASE.
-def stringContains(string, words_list):
-	string = string.lower()
-	for word in words_list:
-		word = word.lower()
-		if word in string:
-			return True
+# Converts strings like "7 days ago" into a datetime object
+def StrToDatetimeObject(upload_time: str) -> timedelta:
+	parts = upload_time.split()
+	quantity = int(parts[0])  # For example: '7'
+	unit = parts[1]  # For example: 'days'
 
-	return False
+	if unit == 'minute' or unit == 'minutes':
+		return timedelta(minutes=quantity)
+	elif unit == 'hour' or unit == 'hours':
+		return timedelta(hours=quantity)
+	elif unit == 'day' or unit == 'days':
+		return timedelta(days=quantity)
+	elif unit == 'week' or unit == 'weeks':
+		return timedelta(weeks=quantity)
+	elif unit == 'month' or unit == 'months':
+		return timedelta(days=quantity*30)  # 'timedelta()' doesn't have a 'months' argument, so we approximate using 'days'
+	else:
+		raise ValueError(f"Unexpected time unit: {unit}")
 
 # Takes the "raw" set of 'div' elements from before, and creates a set of Job objects, each contains the relevant information.
 # In the process we only select the jobs *whose title contains at least one of the keywords in 'keywords_list'*
-def rawJobsToFormattedJobs(divs_elements, keywords_list):
+def rawJobsToFormattedJobs(divs_elements: set, keywords: list[str], cutoff_time_in_months: int, forbidden_words: list[str]) -> set[Job]:
 	formatted_jobs = set()
 
 	for div in divs_elements:
-		try: # Temporary, until I debug this pesky 'valueError' exception
-			first_a_element, second_a_element = div.find_all("a")
-		except ValueError:
-			with open("test.html", "w") as file:
-				file.write(div)
-			exit(-1)
-
+		first_a_element, second_a_element = div.find_all("a")
 		content = first_a_element.text # Gets content of element
 		content = content.strip()
-		# If the job's title doesn't contain one of the keywords, we don't care and move on
-		if not stringContains(content, keywords_list):
+		# If the job's title doesn't contain at least one of the keywords (ignoring case),
+		# or it contains one of the forbidden words, we don't care and move on
+		# We pass a generator expression, such that each keyword turns into a boolean that represents whether it's contained in keywords_list
+		if not any( (keyword.lower() in content.lower()) for keyword in keywords ) or \
+			any( (forbidden.lower() in content.lower()) for forbidden in forbidden_words ):
 			continue
 
 		location = div.find("span", class_="job-search-card__location").text # Finds *element* inside <div> element
@@ -140,39 +147,21 @@ def rawJobsToFormattedJobs(divs_elements, keywords_list):
 		upload_time = div.find("time").text
 		upload_time = upload_time.strip()
 
+		timedelta_obj = StrToDatetimeObject(upload_time) # We'll use this object to sort later
+		if timedelta(days=cutoff_time_in_months * 30) < timedelta_obj: # If a job listing is too old, we don't care and move on
+			continue
+
 		href = first_a_element.get("href") # Finds *field* of <a> element
 		index = href.find('?')
 		if index != -1: # Removes the query string from the URL, if present
 			href = href[:index]
 
-		curr_job = Job(content, location, upload_time, company_name, href)
+		curr_job = Job(content, location, upload_time, company_name, href, timedelta_obj)
 		formatted_jobs.add(curr_job)
 
 	return formatted_jobs
 
-# Sadly, we can't use the 'datetime' field in the time element, since it only stores dates without hours (example: '2023-10-17').
-# We want our sorting to be precise, so we have to work with the time element's content (example: '3 days ago').
-# For that we create a sorting key function, to pass to 'sort'
-def sortKey(job):
-	first_space_index = job.upload_time.index(' ')
-	time_unit = job.upload_time.split()[1] # Can be 'minutes', 'hours', 'days', 'weeks' or 'months'
-	num_of_units = int(job.upload_time[:first_space_index]) # Number of 'minutes', 'hours', 'days', 'weeks' or 'months'
-
-	# We use 'in' instead of '==' because 'time_unit' could be "minute" or "minutes", for example
-	if "minute" in time_unit: # Range [1,59]
-		return num_of_units
-	elif "hour" in time_unit: # Range: [60,82]
-		return 59 + num_of_units
-	elif "day" in time_unit: # Range: [83,111]
-		return 82 + num_of_units
-	elif "week" in time_unit: # Range [112,114]
-		return 111 + num_of_units
-	elif "month" in time_unit: # Range: [114,125]
-		return 114 + num_of_units
-	else:
-		raise Exception("Faulty time unit: " + time_unit)
-
-def printSets(all_curr_jobs, old_jobs):
+def printSets(all_curr_jobs: set[Job], old_jobs: set[Job]) -> None:
 	added_jobs = all_curr_jobs - old_jobs  # If file not found, then old_jobs is empty, so added_jobs == all_curr_jobs.
 	unchanged_jobs = all_curr_jobs - added_jobs
 
@@ -181,18 +170,20 @@ def printSets(all_curr_jobs, old_jobs):
 	else:
 		print(Fore.GREEN + f"List of available jobs ({len(added_jobs)}):" + Fore.RESET)
 
-	for job in sorted(added_jobs, key=sortKey):
+	# We sort by the job's datetime field.
+	for job in sorted(added_jobs, key=lambda job_arg: job_arg.timedelta_obj):
 		job.print()
 
 	if old_jobs:
 		print(Fore.GREEN + f"Unchanged jobs since last run of the script ({len(unchanged_jobs)}):" + Fore.RESET)
-		for job in sorted(unchanged_jobs, key=sortKey):
+		for job in sorted(unchanged_jobs, key=lambda job_arg: job_arg.timedelta_obj):
 			job.print()
 
-def jobTitlesToJobUrls(job_titles, country):
+# Convert title like "Junior Software Engineer" to a valid URL like
+# "https://www.linkedin.com/jobs/search?keywords=Junior%20Software%20Engineer&location=Israel"
+def jobTitlesToJobUrls(job_titles: list[str], country: str) -> list[str]:
 	job_urls = []
-	# Convert title like "Student Software Engineer" to a valid URL like
-	# "https://www.linkedin.com/jobs/search?keywords=Student%20Software%20Engineer&location=Israel"
+
 	for title in job_titles:
 		curr_str = "https://www.linkedin.com/jobs/search?keywords="
 		words = [word + "%20" for word in title.split()]
@@ -204,10 +195,14 @@ def jobTitlesToJobUrls(job_titles, country):
 
 	return job_urls
 
-def main():
-	job_titles = ["Student Software", "Student Software Engineer"]
+def main() -> None:
+	""" User Defined Variables """
+	job_titles = ["Junior Software", "Junior Software Engineer", "Junior Software Developer"]
 	country = "Israel"
-	keywords_list = ["student", "intern", "סטודנט"]
+	keywords = ["Junior", "Intern"]
+	forbidden_words = ["QA", "Test", "Automation", "IT", "Help", "Support", "Customer"]
+	cutoff_time_in_months = 2 # Won't show listings older than the number stored in here
+
 
 	print("Running, please wait...")
 	job_urls = jobTitlesToJobUrls(job_titles, country)
@@ -215,18 +210,17 @@ def main():
 	options = Options()
 	options.add_argument("--headless=new") # If you want to see the driver in action (for debugging purposes), comment this line
 	options.add_argument("--disable-gpu") # Helps a bit with performance
+	options.add_argument("--lang=en-US") # Forces the listings to be in english, so the code functions properly
 	driver = webdriver.Chrome(options)
 
-	start = time.time()
 	divs_elements = getRawJobs(driver, job_urls)
 	driver.close()
-	print(time.time() - start)
-	all_curr_jobs = rawJobsToFormattedJobs(divs_elements, keywords_list)
+	all_curr_jobs = rawJobsToFormattedJobs(divs_elements, keywords, cutoff_time_in_months, forbidden_words)
 
 	try:
 		with open("jobs.csv", 'r') as file:
 			reader = csv.reader(file)
-			old_jobs = {Job(row[0], row[1], row[2], row[3], row[4]) for row in reader}
+			old_jobs = {Job(row[0], row[1], row[2], row[3], row[4], StrToDatetimeObject(row[2])) for row in reader}
 	except FileNotFoundError:
 		old_jobs = set()
 
